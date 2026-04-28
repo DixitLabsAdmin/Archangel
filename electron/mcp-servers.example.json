@@ -1,0 +1,40 @@
+{
+  "_comment": "Eurelyas MCP server config. Set enabled=true and provide an authorization_token (or $ENV_VAR reference) to wire in a connector. Tokens beginning with $ are resolved from .env at startup. Each server uses Anthropic's mcp_servers schema. Restart Eurelyas after editing.",
+  "_docs": "https://docs.claude.com/en/docs/agents-and-tools/mcp-connector",
+  "servers": [
+    {
+      "enabled": false,
+      "name": "gmail",
+      "url": "https://mcp.example.com/gmail/sse",
+      "authorization_token": "$GMAIL_MCP_TOKEN",
+      "tool_configuration": {
+        "enabled": true,
+        "allowed_tools": ["search_messages", "read_message", "send_message"]
+      }
+    },
+    {
+      "enabled": false,
+      "name": "google-drive",
+      "url": "https://mcp.example.com/drive/sse",
+      "authorization_token": "$DRIVE_MCP_TOKEN"
+    },
+    {
+      "enabled": false,
+      "name": "google-calendar",
+      "url": "https://mcp.example.com/calendar/sse",
+      "authorization_token": "$CALENDAR_MCP_TOKEN"
+    },
+    {
+      "enabled": false,
+      "name": "slack",
+      "url": "https://mcp.example.com/slack/sse",
+      "authorization_token": "$SLACK_MCP_TOKEN"
+    },
+    {
+      "enabled": false,
+      "name": "miro",
+      "url": "https://mcp.miro.com/sse",
+      "authorization_token": "$MIRO_MCP_TOKEN"
+    }
+  ]
+}

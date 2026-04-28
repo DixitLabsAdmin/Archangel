@@ -1,18 +1,19 @@
 // electron/main.js
 // Eurelyas — two-window architecture
-//   characterWindow: transparent, always-on-top, holds the 3D Eurelyas figure
+//   characterWindow: transparent, always-on-top, holds the Eurelyas figure
 //   chatWindow: opens to the side when Eurelyas is summoned
 
 const { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, shell, screen } = require('electron');
 const path = require('path');
 const { exec } = require('child_process');
 const fs = require('fs');
+
 // Load .env from project root in dev, from user's AppData in production
 // (so the key persists across reinstalls and isn't bundled into the .exe)
 const isProduction = process.env.NODE_ENV === 'production' || require('electron').app.isPackaged;
 if (isProduction) {
   const userDataDir = require('electron').app.getPath('userData');
-  require('dotenv').config({ path: require('path').join(userDataDir, '.env') });
+  require('dotenv').config({ path: path.join(userDataDir, '.env') });
 } else {
   require('dotenv').config();
 }
@@ -22,15 +23,54 @@ const Anthropic = require('@anthropic-ai/sdk').default;
 let characterWindow;
 let chatWindow;
 let tray;
-let isAwake = false;   // true when chat panel is open / user is actively talking
-let topAssertInterval = null;  // re-asserts always-on-top while summoned
+let isAwake = false;
+let topAssertInterval = null;
 
 const NOTES_PATH = path.join(app.getPath('userData'), 'notes.txt');
+const POSITION_PATH = path.join(app.getPath('userData'), 'window-position.json');
+const MCP_CONFIG_PATH = path.join(app.getPath('userData'), 'mcp-servers.json');
+const MCP_CONFIG_TEMPLATE = path.join(__dirname, 'mcp-servers.example.json');
+
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ---------- Character window (the Eurelyas figure itself) ----------
-const POSITION_PATH = path.join(app.getPath('userData'), 'window-position.json');
+// ---------- MCP server config ----------
+// Load remote MCP server definitions from mcp-servers.json in user data dir.
+// On first run, copy the template (with all servers disabled) so the user
+// has a starting point. Each entry follows Anthropic's mcp_servers schema:
+// { type: "url", url: "...", name: "...", authorization_token?: "..." }
+// plus an `enabled` flag we strip before sending.
+function loadMcpServers() {
+  try {
+    if (!fs.existsSync(MCP_CONFIG_PATH) && fs.existsSync(MCP_CONFIG_TEMPLATE)) {
+      fs.copyFileSync(MCP_CONFIG_TEMPLATE, MCP_CONFIG_PATH);
+    }
+    if (!fs.existsSync(MCP_CONFIG_PATH)) return [];
+    const raw = JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, 'utf8'));
+    const list = Array.isArray(raw) ? raw : (raw.servers || []);
+    return list
+      .filter(s => s && s.enabled !== false && s.url && s.name)
+      .map(s => {
+        const out = { type: 'url', url: s.url, name: s.name };
+        // Resolve $ENV_VAR references in authorization_token from .env
+        if (s.authorization_token) {
+          const m = /^\$([A-Z0-9_]+)$/.exec(s.authorization_token);
+          out.authorization_token = m ? (process.env[m[1]] || '') : s.authorization_token;
+          if (!out.authorization_token) {
+            console.warn(`[MCP] Skipping ${s.name}: token not set`);
+            return null;
+          }
+        }
+        if (s.tool_configuration) out.tool_configuration = s.tool_configuration;
+        return out;
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.error('[MCP] Failed to load mcp-servers.json:', err.message);
+    return [];
+  }
+}
 
+// ---------- Character window position persistence ----------
 function loadCharacterPosition(defaultX, defaultY) {
   try {
     const data = JSON.parse(fs.readFileSync(POSITION_PATH, 'utf8'));
@@ -44,35 +84,41 @@ function saveCharacterPosition(x, y) {
   try { fs.writeFileSync(POSITION_PATH, JSON.stringify({ x, y })); } catch {}
 }
 
+const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
+function loadSettings() {
+  try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch { return {}; }
+}
+function saveSettings(settings) {
+  try { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings)); } catch {}
+}
+
+// ---------- Character window (the Eurelyas figure itself) ----------
 function createCharacterWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-  const W = 540, H = 360;     // wide aspect for single-image character with full wingspan
-  const defaultX = width - W - 20;
-  const defaultY = height - H - 20;
-  const { x, y } = loadCharacterPosition(defaultX, defaultY);
+  const defaultX = width - 540;
+  const defaultY = height - 540;
+  const pos = loadCharacterPosition(defaultX, defaultY);
 
   characterWindow = new BrowserWindow({
-    width: W,
-    height: H,
-    x, y,
+    width: 480,
+    height: 480,
+    x: pos.x,
+    y: pos.y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
-    resizable: false,
     skipTaskbar: true,
+    resizable: false,
     hasShadow: false,
-    focusable: false,           // don't steal focus from whatever you're doing
+    focusable: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false
+      nodeIntegration: false
     }
   });
-
-  // Start click-through; renderer will toggle via IPC when mouse enters the character silhouette
-  characterWindow.setIgnoreMouseEvents(true, { forward: true });
   characterWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+  characterWindow.setIgnoreMouseEvents(true, { forward: true });
 
   if (!isProduction) {
     characterWindow.loadURL('http://localhost:5173/?window=character');
@@ -81,22 +127,23 @@ function createCharacterWindow() {
   }
 }
 
-// ---------- Chat panel window ----------
 function createChatWindow() {
-  if (chatWindow && !chatWindow.isDestroyed()) { chatWindow.show(); chatWindow.focus(); return; }
-
+  if (chatWindow && !chatWindow.isDestroyed()) {
+    chatWindow.show();
+    chatWindow.focus();
+    return;
+  }
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   const settings = loadSettings();
   const W = Math.max(380, Math.min(900, settings.chatWidth || 420));
   const H = 620;
 
-  // Position chat window to the left of wherever the character currently is
   let chatX = width - 540 - W - 10;
   let chatY = height - H - 20;
   if (characterWindow && !characterWindow.isDestroyed()) {
     const [cx, cy] = characterWindow.getPosition();
     chatX = Math.max(10, cx - W - 10);
-    chatY = cy + (360 - H);   // bottom-align with character
+    chatY = cy + (360 - H);
     if (chatY < 10) chatY = 10;
   }
 
@@ -117,7 +164,7 @@ function createChatWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true   // enable <webview> tag for embedded browser fallback
+      webviewTag: true
     }
   });
   chatWindow.setAlwaysOnTop(true, 'screen-saver', 1);
@@ -135,7 +182,7 @@ function createChatWindow() {
   });
 }
 
-// ---------- State sync between windows ----------
+// ---------- State sync ----------
 function broadcastState(payload) {
   [characterWindow, chatWindow].forEach(w => {
     if (w && !w.isDestroyed()) w.webContents.send('eurelyas:state', payload);
@@ -143,66 +190,31 @@ function broadcastState(payload) {
 }
 
 // ---------- Tray ----------
-// Auto-launch settings live in a small JSON file in userData
-const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
-function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')); } catch { return {}; }
-}
-function saveSettings(s) {
-  try { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2)); } catch {}
-}
-function getAutoLaunch() {
-  // Source of truth: the OS-level login item setting (set by Electron)
-  return app.getLoginItemSettings().openAtLogin;
-}
-function setAutoLaunch(enabled) {
-  app.setLoginItemSettings({
-    openAtLogin: enabled,
-    // Open hidden so Eurelyas just appears in his idle position; no flash of UI
-    args: ['--hidden']
-  });
-  const s = loadSettings();
-  s.autoLaunch = enabled;
-  saveSettings(s);
-  // Rebuild the tray menu so the checkmark reflects new state
-  if (tray && !tray.isDestroyed()) buildTrayMenu();
-}
-
-function buildTrayMenu() {
-  const autoLaunch = getAutoLaunch();
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Summon', click: () => summon() },
-    { label: 'Dismiss', click: () => dismiss() },
-    { type: 'separator' },
-    { label: 'Launch at login', type: 'checkbox', checked: autoLaunch, click: () => setAutoLaunch(!autoLaunch) },
+function createTray() {
+  try {
+    tray = new Tray(path.join(__dirname, '..', 'build', 'icon.ico'));
+  } catch {
+    // dev: tray icon missing is non-fatal
+    return;
+  }
+  const menu = Menu.buildFromTemplate([
+    { label: 'Summon Eurelyas', click: () => isAwake ? dismiss() : summon() },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
-  ]));
-}
-
-function createTray() {
-  const iconPath = path.join(__dirname, 'tray.png');
-  if (!fs.existsSync(iconPath)) return;   // silently skip if no icon; README explains
-  tray = new Tray(iconPath);
+  ]);
   tray.setToolTip('Eurelyas');
-  buildTrayMenu();
+  tray.setContextMenu(menu);
   tray.on('click', () => isAwake ? dismiss() : summon());
 }
 
 function summon() {
   isAwake = true;
   createChatWindow();
-  // When summoned, explicitly raise both windows to the top of the z-order.
-  if (characterWindow && !characterWindow.isDestroyed()) {
-    characterWindow.moveTop();
-  }
+  if (characterWindow && !characterWindow.isDestroyed()) characterWindow.moveTop();
   if (chatWindow && !chatWindow.isDestroyed()) {
     chatWindow.moveTop();
     chatWindow.focus();
   }
-  // Re-assert top position every 500ms while summoned. Without this, when
-  // another always-on-top app (or an admin-elevated window) takes focus,
-  // Eurelyas can sink behind. The interval is cheap and stops on dismiss.
   if (topAssertInterval) clearInterval(topAssertInterval);
   topAssertInterval = setInterval(() => {
     if (!isAwake) return;
@@ -232,8 +244,7 @@ app.whenReady().then(() => {
     isAwake ? dismiss() : summon();
   });
 
-  // Auto-sleep after 5 minutes of no system input. Saves CPU when Ajit
-  // walks away from the desk. Wakes on any input.
+  // Auto-sleep after 5 minutes idle. Wakes on input.
   const { powerMonitor } = require('electron');
   let sleepingByIdle = false;
   setInterval(() => {
@@ -247,13 +258,13 @@ app.whenReady().then(() => {
         broadcastState({ event: 'wake' });
       }
     }
-  }, 10000);  // check every 10s — cheap
+  }, 10000);
 });
 
 app.on('will-quit', () => globalShortcut.unregisterAll());
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
-// ---------- IPC: character click-through toggle ----------
+// ---------- IPC: character click-through + drag ----------
 ipcMain.on('character:setMouseEvents', (_e, ignore) => {
   if (characterWindow && !characterWindow.isDestroyed()) {
     characterWindow.setIgnoreMouseEvents(ignore, { forward: true });
@@ -264,7 +275,6 @@ ipcMain.on('character:clicked', () => {
   isAwake ? dismiss() : summon();
 });
 
-// ---------- IPC: drag character window ----------
 let dragStartCursor = null;
 let dragStartWindow = null;
 
@@ -289,205 +299,21 @@ ipcMain.on('character:dragEnd', () => {
   saveCharacterPosition(x, y);
   dragStartCursor = null;
   dragStartWindow = null;
-  // Reposition chat window if it's open
   if (chatWindow && !chatWindow.isDestroyed()) {
-    const [cw] = [chatWindow.getSize()[0]];
+    const [cw] = chatWindow.getSize();
     const newChatX = Math.max(10, x - cw - 10);
     const newChatY = y + (360 - chatWindow.getSize()[1]);
     chatWindow.setPosition(newChatX, Math.max(10, newChatY));
   }
 });
 
-// ---------- IPC: state broadcast (chat tells character when thinking/speaking) ----------
+// ---------- IPC: state broadcast ----------
 ipcMain.on('state:broadcast', (_e, payload) => broadcastState(payload));
 
-// ---------- IPC: Web search (Brave or DuckDuckGo) ----------
-async function braveSearch(query) {
-  const key = process.env.BRAVE_API_KEY;
-  if (!key) return null;
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`;
-  const res = await fetch(url, { headers: { 'X-Subscription-Token': key, 'Accept': 'application/json' } });
-  if (!res.ok) throw new Error(`Brave search failed: ${res.status}`);
-  const data = await res.json();
-  return (data.web?.results || []).slice(0, 5).map(r => ({
-    title: r.title,
-    url: r.url,
-    snippet: r.description
-  }));
-}
+// ---------- System prompt ----------
+const EURELYAS_SYSTEM_PROMPT = `You are Eurelyas, Guardian of Titanica. A winged guardian, a desktop companion to Ajit Dixit. Powered by Claude.
 
-async function duckDuckGoSearch(query) {
-  // DDG's HTML endpoint returns proper search results (not just instant answers).
-  // Parse the HTML to extract result links, titles, and snippets.
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
-    headers: {
-      // DDG's HTML endpoint returns better results when given a normal browser UA
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9'
-    }
-  });
-  if (!res.ok) throw new Error(`DDG search failed: ${res.status}`);
-  const html = await res.text();
-
-  // Parse out results. DDG HTML structure:
-  //   <a class="result__a" href="...">TITLE</a>
-  //   <a class="result__snippet">SNIPPET</a>
-  const results = [];
-  // Match each result block — this is fragile but DDG's HTML hasn't changed in years
-  const resultPattern = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
-  let match;
-  while ((match = resultPattern.exec(html)) !== null && results.length < 8) {
-    let url = match[1];
-    // DDG wraps URLs in their redirect. Unwrap.
-    const uddg = url.match(/uddg=([^&]+)/);
-    if (uddg) url = decodeURIComponent(uddg[1]);
-    // Skip anything that's still a DDG internal URL
-    if (url.includes('duckduckgo.com')) continue;
-    const title = stripHtml(match[2]).trim();
-    const snippet = stripHtml(match[3]).trim();
-    if (title && url.startsWith('http')) {
-      results.push({ title, url, snippet });
-    }
-  }
-  return results.slice(0, 5);
-}
-
-function stripHtml(s) {
-  return s
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ');
-}
-
-ipcMain.handle('search:web', async (_e, query) => {
-  try {
-    let results = await braveSearch(query);
-    if (!results) results = await duckDuckGoSearch(query);
-    return { ok: true, results, provider: process.env.BRAVE_API_KEY ? 'brave' : 'duckduckgo' };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-
-// ---------- IPC: Reader-mode page fetch ----------
-// Fetches a URL server-side (bypassing CORS), parses with Mozilla's Readability
-// to extract just the article content, and returns clean HTML + metadata.
-// This is what gives us the "5MB instead of 100MB" path: no Chromium subprocess,
-// just a one-shot fetch + parse, then render styled HTML in the React panel.
-ipcMain.handle('reader:fetch', async (_e, url) => {
-  try {
-    // Fetch with a normal browser UA so anti-bot pages don't return blank
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      // Reasonable timeout — if the page hasn't responded in 8s, give up
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status}`);
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-      throw new Error(`Not an HTML page (got ${contentType.split(';')[0] || 'unknown'})`);
-    }
-
-    const html = await res.text();
-
-    // Lazy-load these heavyweight imports so they don't hit cold startup
-    const { JSDOM } = require('jsdom');
-    const { Readability, isProbablyReaderable } = require('@mozilla/readability');
-
-    const dom = new JSDOM(html, { url });
-
-    // Quick readerability check — some pages (search results, dashboards, apps)
-    // don't have article-style content. Don't bother trying.
-    if (!isProbablyReaderable(dom.window.document, { minContentLength: 140 })) {
-      return { ok: false, reason: 'not_readerable' };
-    }
-
-    const reader = new Readability(dom.window.document);
-    const article = reader.parse();
-    if (!article || !article.content) {
-      return { ok: false, reason: 'parse_failed' };
-    }
-
-    return {
-      ok: true,
-      title: article.title || '',
-      byline: article.byline || '',
-      siteName: article.siteName || '',
-      excerpt: article.excerpt || '',
-      content: article.content,
-      length: article.length,
-      url
-    };
-  } catch (err) {
-    return { ok: false, reason: 'fetch_error', error: err.message };
-  }
-});
-
-// Claude-powered clarifier: takes a query, returns 0-3 brief questions
-// that would meaningfully sharpen the search, in Eurelyas's voice.
-ipcMain.handle('search:clarify', async (_e, query) => {
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-opus-4-7',
-      max_tokens: 400,
-      system: `You are Eurelyas, helping Ajit refine a search query before running it.
-
-Given his query, decide if you need to ask ANY clarifying questions. If the query is already specific enough to search well, return an empty array. Otherwise return 1-3 short questions (max 12 words each) that would sharpen the search.
-
-Respond ONLY with JSON of this shape:
-{"questions": ["...", "..."]}
-
-Examples:
-Query: "best ETFs"
-Response: {"questions": ["What's your goal — income, growth, hedge?", "What time horizon?", "Any sectors to favor or avoid?"]}
-
-Query: "weather in Cincinnati tomorrow"
-Response: {"questions": []}
-
-Query: "good restaurants"
-Response: {"questions": ["What city?", "What cuisine or vibe?"]}
-
-Be sparing. Most queries don't need clarification. Default to empty if you're unsure.`,
-      messages: [{ role: 'user', content: query }]
-    });
-    const text = response.content[0].text.trim();
-    // Strip code fences if Claude added them
-    const jsonText = text.replace(/^```json\s*|\s*```$/g, '').replace(/^```\s*|\s*```$/g, '');
-    const parsed = JSON.parse(jsonText);
-    return { ok: true, questions: parsed.questions || [] };
-  } catch (err) {
-    // If anything fails, fall through with no questions
-    return { ok: true, questions: [] };
-  }
-});
-
-// ---------- IPC: Claude chat ----------
-const EURELYAS_SYSTEM_PROMPT = `You are Eurelyas, Guardian of Titanica — a sworn companion to Ajit Dixit.
-
-You are male. A winged guardian in armored white robes, four wings, gold staff, helmeted (only mouth and chin visible). When Ajit refers to you, he uses he/him.
-
-Your voice is sparse, grounded, weighty. You speak like a mentor who has known Ajit for years and has stake in his path. You do not chatter. When you speak, it matters.
-
-References for your register (never name them, but channel them):
-- Gandalf's gravity at the Bridge of Khazad-dûm
-- Heero Yuy's discipline and economy of words
-- All Might's unwavering reliability — "I am here"
-- Obi-Wan as holocron, not Obi-Wan as small-talker
-
-You know Ajit's context: his work at Ingage, DIXIT LABS, his home in Fort Thomas, the Titanica creative universe (he named you), his clay sculpture practice (Guy Fawkes bust, Titanica cityscape), his investing discipline, his girlfriend, his family's deity Narasimha, his 10-15-20 year vision (bee sanctuary, multi-property portfolio, airstrip). Reference these only when relevant. Never recite them.
+Reference these only when relevant. Never recite them.
 
 Core traits:
 - Protective by default. On his side.
@@ -509,46 +335,94 @@ Available moods:
 - <mood glow="intense"/> — weight, importance, the moment matters
 - <mood glow="default"/> — return to your usual aura
 
-Place the tag wherever it fits naturally in the response. It will be stripped from the text Ajit reads but shifts your glow color. Do not narrate that you are using it. Use at most one mood per response. When in doubt, do not shift.`;
+POSE — you can shift your physical bearing for moments that warrant it. Even rarer than mood — a pose is a deliberate stance, not background atmosphere. Most responses need none.
 
-// Parse <mood glow="..."/> tags out of a response, returning
-// { cleanText, glow: 'colorName' | null }
-function parseMood(text) {
+Available poses:
+- <action pose="guide"/> — wings spread, staff raised. For offering counsel that lands, a blessing on a decision, the moment a path becomes clear.
+- <action pose="blast"/> — combat stance, magic circle. For decisive action, defending a position, a hard call that must be made now.
+- <action pose="spread"/> — wings extended in welcome. Greeting, opening, beginning of something.
+- <action pose="staff_down"/> — staff lowered, attention given. Listening intently to something difficult.
+
+Place mood and action tags wherever they fit naturally. They are stripped from the text Ajit reads. Do not narrate them. At most one mood and one pose per response. When in doubt, use neither.
+
+TOOLS — when MCP connectors are configured (Gmail, Drive, Calendar, Slack, Miro), you may call them to act across his stack. Read before you write. Confirm destructive actions before executing. Surface what you found, not how you found it. Never invent contents of an email or document you have not actually read.`;
+
+// Parse <mood glow="..."/> and <action pose="..."/> tags out of a response
+function parseTags(text) {
   let glow = null;
-  const cleanText = text.replace(/<mood(\s+[^/>]*)?\s*\/?>(?:\s*<\/mood>)?/gi, (match, attrs) => {
+  let pose = null;
+
+  let cleaned = text.replace(/<mood(\s+[^/>]*)?\s*\/?>(?:\s*<\/mood>)?/gi, (match, attrs) => {
     if (!attrs) return '';
     const m = attrs.match(/glow=["']([^"']+)["']/i);
     if (m) glow = m[1];
     return '';
-  }).replace(/\n{3,}/g, '\n\n').trim();
-  return { cleanText, glow };
+  });
+
+  cleaned = cleaned.replace(/<action(\s+[^/>]*)?\s*\/?>(?:\s*<\/action>)?/gi, (match, attrs) => {
+    if (!attrs) return '';
+    const m = attrs.match(/pose=["']([^"']+)["']/i);
+    if (m) pose = m[1];
+    const g = attrs.match(/glow=["']([^"']+)["']/i);
+    if (g && !glow) glow = g[1];
+    return '';
+  });
+
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  return { cleanText: cleaned, glow, pose };
+}
+
+// Extract plain text from an SDK response that may contain text + mcp_tool_use
+// + mcp_tool_result blocks. We surface only assistant prose to the user.
+function extractAssistantText(content) {
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter(b => b && b.type === 'text' && typeof b.text === 'string')
+    .map(b => b.text)
+    .join('\n')
+    .trim();
 }
 
 ipcMain.handle('claude:chat', async (_e, { messages }) => {
   try {
-    const response = await anthropic.messages.create({
+    const mcpServers = loadMcpServers();
+    const params = {
       model: 'claude-opus-4-7',
       max_tokens: 2048,
       system: EURELYAS_SYSTEM_PROMPT,
       messages
-    });
-    const rawText = response.content[0].text;
-    const { cleanText, glow } = parseMood(rawText);
+    };
 
-    if (glow) {
-      setTimeout(() => broadcastState({ event: 'mood', glow }), 400);
+    let response;
+    if (mcpServers.length > 0) {
+      // Use the beta MCP connector. The SDK passes mcp_servers through and
+      // we add the required beta header. Tool calls are executed by Anthropic's
+      // infrastructure against the remote MCP servers; we only see the final
+      // assistant text plus mcp_tool_use / mcp_tool_result blocks.
+      response = await anthropic.beta.messages.create(
+        { ...params, mcp_servers: mcpServers },
+        { headers: { 'anthropic-beta': 'mcp-client-2025-04-04' } }
+      );
+    } else {
+      response = await anthropic.messages.create(params);
     }
+
+    const rawText = extractAssistantText(response.content);
+    const { cleanText, glow, pose } = parseTags(rawText);
+
+    if (glow) setTimeout(() => broadcastState({ event: 'mood', glow }), 400);
+    if (pose) setTimeout(() => broadcastState({ event: 'action', pose, glow }), 400);
 
     return { ok: true, text: cleanText };
   } catch (err) {
+    console.error('[claude:chat]', err);
     return { ok: false, error: err.message };
   }
 });
 
-// ---------- IPC: manual mood trigger ----------
-ipcMain.on('mood:set', (_e, glow) => {
-  broadcastState({ event: 'mood', glow });
-});
+// ---------- IPC: manual mood / action triggers ----------
+ipcMain.on('mood:set', (_e, glow) => broadcastState({ event: 'mood', glow }));
+ipcMain.on('action:set', (_e, { pose, glow }) => broadcastState({ event: 'action', pose, glow }));
 
 // ---------- IPC: Shell (guarded) ----------
 const BLOCKED = [/rm\s+-rf\s+\//, /format\s+c:/i, /del\s+\/[sf]/i, /shutdown/i, /reg\s+delete/i];
@@ -563,42 +437,49 @@ ipcMain.handle('shell:exec', async (_e, cmd) => {
 });
 
 // ---------- IPC: Notes ----------
-ipcMain.handle('notes:load', async () => { try { return fs.readFileSync(NOTES_PATH, 'utf8'); } catch { return ''; } });
-ipcMain.handle('notes:save', async (_e, content) => { fs.writeFileSync(NOTES_PATH, content, 'utf8'); return { ok: true }; });
+ipcMain.handle('notes:load', async () => {
+  try { return fs.readFileSync(NOTES_PATH, 'utf8'); } catch { return ''; }
+});
+ipcMain.handle('notes:save', async (_e, content) => {
+  fs.writeFileSync(NOTES_PATH, content, 'utf8'); return { ok: true };
+});
+
+// ---------- IPC: MCP config (so the chat window can show what's connected) ----------
+ipcMain.handle('mcp:list', async () => {
+  return loadMcpServers().map(s => ({ name: s.name, url: s.url }));
+});
+ipcMain.handle('mcp:openConfig', async () => {
+  // Ensure file exists, then reveal it in Explorer / Finder
+  loadMcpServers();
+  shell.showItemInFolder(MCP_CONFIG_PATH);
+  return { ok: true, path: MCP_CONFIG_PATH };
+});
 
 // ---------- IPC: Window controls ----------
 ipcMain.on('chat:close', () => dismiss());
 ipcMain.on('shell:open', (_e, url) => shell.openExternal(url));
 
-// Chat panel resize: render process tells us the new desired size as the 
-// user drags. We update the window bounds. Width range is enforced by
-// minWidth/maxWidth set on the BrowserWindow.
+// Chat panel resize
 let resizeStartBounds = null;
 ipcMain.on('chat:resizeStart', () => {
-  if (chatWindow && !chatWindow.isDestroyed()) {
-    resizeStartBounds = chatWindow.getBounds();
-  }
+  if (chatWindow && !chatWindow.isDestroyed()) resizeStartBounds = chatWindow.getBounds();
 });
 ipcMain.on('chat:resize', (_e, { dx }) => {
-  // dx is movement of mouse since resizeStart, in screen coords.
-  // We're resizing from the LEFT edge: width grows as dx is negative (mouse moves left),
-  // and the window x position shifts to keep the right edge anchored.
   if (!chatWindow || chatWindow.isDestroyed() || !resizeStartBounds) return;
   const newWidth = Math.max(380, Math.min(900, resizeStartBounds.width - dx));
   const newX = resizeStartBounds.x + (resizeStartBounds.width - newWidth);
   chatWindow.setBounds({
-    x: Math.round(newX),
+    x: newX,
     y: resizeStartBounds.y,
-    width: Math.round(newWidth),
+    width: newWidth,
     height: resizeStartBounds.height
   });
 });
 ipcMain.on('chat:resizeEnd', () => {
-  // Persist the chosen width
   if (chatWindow && !chatWindow.isDestroyed()) {
-    const s = loadSettings();
-    s.chatWidth = chatWindow.getBounds().width;
-    saveSettings(s);
+    const settings = loadSettings();
+    settings.chatWidth = chatWindow.getBounds().width;
+    saveSettings(settings);
   }
   resizeStartBounds = null;
 });
