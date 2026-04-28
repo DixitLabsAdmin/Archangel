@@ -1,6 +1,14 @@
 // src/character/SpriteCharacterWindow.jsx
 // Drop-in replacement for CharacterWindow.jsx that uses sprite poses.
 // Handles click-through, drag-to-move, click-to-summon, and animation actions.
+//
+// State→pose mapping:
+//   THINKING  → blast   (combat stance, magic circle — Eurelyas working)
+//   SPEAKING  → guide   (wings spread, staff raised — Eurelyas counseling)
+//   otherwise → idle    (the floating, breathing default)
+//
+// An explicit `action` event with a `pose` overrides the auto mapping for
+// its duration. Useful when Claude emits an <action pose="..."/> tag.
 
 import React, { useEffect, useRef, useState } from 'react';
 import SpriteCharacter from './SpriteCharacter.jsx';
@@ -8,48 +16,63 @@ import { STATES } from '../shared/palette.js';
 
 const DRAG_THRESHOLD = 5;
 
-// How long an action lasts before auto-reverting to idle. 0 = sticky (stays).
+// How long an explicit action pose holds before reverting. 0 = sticky.
 const ACTION_DURATIONS = {
-  spread:    8000,   // wings spread for 8 seconds
-  staff_down: 6000,  // staff pointed down for 6 seconds
-  idle:       0      // sticky
+  spread:     8000,
+  staff_down: 6000,
+  guide:      6000,   // blessing / offering counsel — overlaps with SPEAKING
+  blast:      5000,   // casting / decisive action — overlaps with THINKING
+  idle:       0
 };
+
+// State-driven pose. Used when no explicit action pose is active.
+function poseForState(state) {
+  if (state === STATES.THINKING) return 'blast';
+  if (state === STATES.SPEAKING) return 'guide';
+  return 'idle';
+}
 
 export default function SpriteCharacterWindow() {
   const rootRef = useRef(null);
   const [state, setState] = useState(STATES.IDLE);
-  const [pose, setPose] = useState('idle');
+  // actionPose: an explicit pose set by an action event. Overrides state pose
+  // until its timer expires. null when no override is active.
+  const [actionPose, setActionPose] = useState(null);
   const [glowMode, setGlowMode] = useState('default');
   const dragRef = useRef({ pressed: false, moved: false, startX: 0, startY: 0 });
   const actionTimerRef = useRef(null);
 
-  // State sync
+  // Effective pose: explicit action wins, otherwise derive from state.
+  const pose = actionPose || poseForState(state);
+
+  // State sync from main process
   useEffect(() => {
     if (!window.eurelyas) return;
     const unsub = window.eurelyas.onState(({ event, pose: newPose, glow }) => {
       if (event === 'summoned')  setState(STATES.SUMMONED);
-      if (event === 'dismissed') setState(STATES.IDLE);
+      if (event === 'dismissed') { setState(STATES.IDLE); setActionPose(null); }
       if (event === 'thinking')  setState(STATES.THINKING);
       if (event === 'speaking')  setState(STATES.SPEAKING);
+      if (event === 'sleep')     setState(STATES.SLEEPING);
+      if (event === 'wake')      setState(STATES.IDLE);
 
-      // Action-driven pose change
+      // Action-driven pose change — explicit override of state pose
       if (event === 'action' && newPose) {
-        setPose(newPose);
+        setActionPose(newPose);
         if (glow) setGlowMode(glow);
 
-        // Auto-revert after duration
         if (actionTimerRef.current) clearTimeout(actionTimerRef.current);
-        const duration = ACTION_DURATIONS[newPose] || 0;
+        const duration = ACTION_DURATIONS[newPose] ?? 0;
         if (duration > 0) {
           actionTimerRef.current = setTimeout(() => {
-            setPose('idle');
+            setActionPose(null);
             setGlowMode('default');
           }, duration);
         }
       }
 
-      // Direct glow change
-      if (event === 'glow' && glow) {
+      // Direct glow change (mood tag)
+      if ((event === 'glow' || event === 'mood') && glow) {
         setGlowMode(glow);
       }
     });
