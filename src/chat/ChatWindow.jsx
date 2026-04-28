@@ -1,0 +1,347 @@
+// src/chat/ChatWindow.jsx
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Send, StickyNote, Terminal, Sparkles, Search as SearchIcon, Wind, ChevronDown, X, Minus } from 'lucide-react';
+import { PALETTE } from '../shared/palette.js';
+import Ledger from './Ledger.jsx';
+import Search from './Search.jsx';
+
+export default function ChatWindow() {
+  const [mode, setMode] = useState('chat');
+  const [messages, setMessages] = useState([
+    { role: 'system', content: 'Eurelyas stands with you, Ajit.' }
+  ]);
+  const [input, setInput] = useState('');
+  const [notes, setNotes] = useState('');
+  const [shellLog, setShellLog] = useState([]);
+  const [shellInput, setShellInput] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    window.eurelyas?.loadNotes().then(setNotes);
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => window.eurelyas?.saveNotes(notes), 500);
+    return () => clearTimeout(t);
+  }, [notes]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, thinking]);
+
+  const handleSend = async () => {
+    if (!input.trim() || thinking) return;
+    const newMsgs = [...messages.filter(m => m.role !== 'system' && m.role !== 'error'), { role: 'user', content: input }];
+    setMessages(m => [...m, { role: 'user', content: input }]);
+    setInput('');
+    setThinking(true);
+    window.eurelyas.broadcastState?.({ event: 'thinking' });
+    const result = await window.eurelyas.chat({ messages: newMsgs });
+    setThinking(false);
+    if (result.ok) {
+      window.eurelyas.broadcastState?.({ event: 'speaking' });
+      setMessages(m => [...m, { role: 'assistant', content: result.text }]);
+      // Return to summoned after a beat
+      setTimeout(() => window.eurelyas.broadcastState?.({ event: 'summoned' }), 1200);
+    } else {
+      window.eurelyas.broadcastState?.({ event: 'summoned' });
+      setMessages(m => [...m, { role: 'error', content: `Error: ${result.error}` }]);
+    }
+  };
+
+  const handleShell = async () => {
+    if (!shellInput.trim()) return;
+    const cmd = shellInput;
+    setShellInput('');
+    setShellLog(l => [...l, { cmd, out: '...', running: true }]);
+    const r = await window.eurelyas.shell(cmd);
+    setShellLog(l => {
+      const copy = [...l];
+      copy[copy.length - 1] = { cmd, out: r.ok ? r.output : r.error, err: !r.ok };
+      return copy;
+    });
+  };
+
+  const panelStyle = {
+    background: PALETTE.panelBg,
+    borderColor: PALETTE.panelBorder,
+    backdropFilter: 'blur(12px)',
+    color: PALETTE.panelText
+  };
+
+  const goldGradient = `linear-gradient(135deg, ${PALETTE.goldLight} 0%, ${PALETTE.goldMid} 100%)`;
+
+  return (
+    <div
+      className="drag w-screen h-screen rounded-2xl overflow-hidden border shadow-2xl flex flex-col relative"
+      style={panelStyle}
+    >
+      {/* Resize handle - drag the left edge to resize the panel */}
+      <ResizeHandle />
+
+      {/* Title bar */}
+      <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: PALETTE.panelBorder }}>
+        <div className="flex items-center gap-2.5">
+          <div
+            className="w-2 h-2 rounded-full"
+            style={{ background: PALETTE.goldGlow, boxShadow: `0 0 10px ${PALETTE.goldGlow}` }}
+          />
+          <span className="text-sm tracking-[0.2em] uppercase" style={{ fontFamily: 'Cinzel, Georgia, serif', color: PALETTE.panelText }}>
+            Eurelyas
+          </span>
+          <span className="text-[10px] tracking-widest uppercase" style={{ color: PALETTE.panelDim }}>
+            Guardian
+          </span>
+        </div>
+        <div className="no-drag flex items-center gap-1">
+          <MoodMenu />
+          <button onClick={() => window.eurelyas.closeChat()} className="p-1 transition hover:text-red-300" style={{ color: PALETTE.panelDim }}>
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="no-drag flex border-b" style={{ borderColor: PALETTE.panelBorder }}>
+        {[
+          { id: 'chat', label: 'Counsel', icon: Sparkles },
+          { id: 'search', label: 'Seek', icon: SearchIcon },
+          { id: 'notes', label: 'Ledger', icon: StickyNote },
+          { id: 'shell', label: 'Command', icon: Terminal }
+        ].map(t => {
+          const Icon = t.icon;
+          const active = mode === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => setMode(t.id)}
+              className="flex-1 flex items-center justify-center gap-2 py-3 text-[10px] tracking-[0.25em] uppercase transition relative"
+              style={{ color: active ? PALETTE.goldLight : PALETTE.panelDim }}
+            >
+              <Icon size={11} />
+              {t.label}
+              {active && (
+                <motion.div
+                  layoutId="tab-indicator"
+                  className="absolute bottom-0 left-0 right-0"
+                  style={{ height: 2, background: goldGradient }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Content */}
+      <div className="no-drag flex-1 flex flex-col min-h-0">
+        <AnimatePresence mode="wait">
+          {mode === 'chat' && (
+            <motion.div key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col min-h-0">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+                {messages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className="max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap"
+                      style={
+                        m.role === 'user'
+                          ? { background: 'rgba(201,169,97,0.12)', border: `1px solid ${PALETTE.goldMid}40`, color: PALETTE.goldLight }
+                          : m.role === 'system'
+                          ? { background: 'rgba(184,201,222,0.06)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelDim, fontStyle: 'italic' }
+                          : m.role === 'error'
+                          ? { background: 'rgba(180,60,60,0.15)', border: '1px solid rgba(220,80,80,0.3)', color: '#f4b4b4' }
+                          : { background: 'rgba(184,201,222,0.08)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelText }
+                      }
+                    >
+                      {m.content}
+                    </div>
+                  </div>
+                ))}
+                {thinking && (
+                  <div className="flex gap-1.5 px-3 py-2">
+                    {[0, 1, 2].map(i => (
+                      <motion.div
+                        key={i}
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ background: PALETTE.goldGlow, boxShadow: `0 0 6px ${PALETTE.goldGlow}` }}
+                        animate={{ y: [0, -4, 0], opacity: [0.5, 1, 0.5] }}
+                        transition={{ repeat: Infinity, duration: 1, delay: i * 0.15 }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="p-3 border-t flex gap-2" style={{ borderColor: PALETTE.panelBorder }}>
+                <input
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSend()}
+                  placeholder="Speak, Ajit…"
+                  className="flex-1 rounded-lg px-3 py-2 text-sm focus:outline-none"
+                  style={{
+                    background: 'rgba(184,201,222,0.06)',
+                    border: `1px solid ${PALETTE.panelBorder}`,
+                    color: PALETTE.panelText
+                  }}
+                />
+                <button
+                  onClick={handleSend}
+                  className="px-3 rounded-lg transition hover:brightness-110"
+                  style={{ background: goldGradient, color: '#2a1f0a' }}
+                >
+                  <Send size={14} />
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {mode === 'search' && (
+            <motion.div key="search" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col min-h-0">
+              <Search />
+            </motion.div>
+          )}
+
+          {mode === 'notes' && (
+            <motion.div key="notes" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col min-h-0">
+              <Ledger value={notes} onChange={setNotes} />
+            </motion.div>
+          )}
+
+          {mode === 'shell' && (
+            <motion.div key="shell" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col min-h-0">
+              <div className="flex-1 overflow-y-auto px-4 py-3 font-mono text-xs space-y-2" style={{ fontFamily: 'ui-monospace, monospace' }}>
+                {shellLog.length === 0 && (
+                  <div className="italic" style={{ color: PALETTE.panelDim }}>The command line awaits.</div>
+                )}
+                {shellLog.map((l, i) => (
+                  <div key={i}>
+                    <div style={{ color: PALETTE.goldLight }}>&gt; {l.cmd}</div>
+                    <div className="pl-3 whitespace-pre-wrap" style={{ color: l.err ? '#f4b4b4' : PALETTE.panelText }}>{l.out}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="p-3 border-t flex gap-2 items-center" style={{ borderColor: PALETTE.panelBorder }}>
+                <span className="font-mono text-sm" style={{ color: PALETTE.goldLight }}>&gt;</span>
+                <input
+                  value={shellInput}
+                  onChange={e => setShellInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleShell()}
+                  placeholder="dir, git status, npm install…"
+                  className="flex-1 bg-transparent text-sm focus:outline-none font-mono"
+                  style={{ color: PALETTE.panelText }}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Footer */}
+      <div className="px-4 py-2 border-t flex items-center justify-between text-[9px] uppercase tracking-[0.2em]"
+           style={{ borderColor: PALETTE.panelBorder, color: PALETTE.panelDim }}>
+        <span>Claude Opus 4.7</span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#86efac', boxShadow: '0 0 6px #86efac' }} />
+          bound
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Manual mood trigger menu
+// Drag handle on the left edge - drag horizontally to resize the panel.
+// Sends mouse delta to main process which updates the window bounds.
+function ResizeHandle() {
+  const startXRef = useRef(0);
+  const draggingRef = useRef(false);
+
+  const handleMouseDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    draggingRef.current = true;
+    startXRef.current = e.screenX;
+    window.eurelyas?.chatResizeStart();
+
+    const handleMove = (ev) => {
+      if (!draggingRef.current) return;
+      const dx = ev.screenX - startXRef.current;
+      window.eurelyas?.chatResize(dx);
+    };
+    const handleUp = () => {
+      draggingRef.current = false;
+      window.eurelyas?.chatResizeEnd();
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  };
+
+  return <div className="resize-w" onMouseDown={handleMouseDown} title="Drag to resize" />;
+}
+
+function MoodMenu() {
+  const [open, setOpen] = useState(false);
+
+  const moods = [
+    { label: 'Default', glow: 'default' },
+    { label: 'Warm',    glow: 'warm' },
+    { label: 'Cool',    glow: 'cool' },
+    { label: 'Crimson', glow: 'crimson' },
+    { label: 'Serene',  glow: 'serene' },
+    { label: 'Intense', glow: 'intense' }
+  ];
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="p-1 transition flex items-center gap-1"
+        style={{ color: open ? PALETTE.goldLight : PALETTE.panelDim }}
+        title="Mood"
+      >
+        <Wind size={13} />
+        <ChevronDown size={10} />
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="absolute right-0 top-full mt-1 rounded-lg overflow-hidden z-50"
+            style={{
+              background: PALETTE.panelBg,
+              backdropFilter: 'blur(10px)',
+              border: `1px solid ${PALETTE.panelBorder}`,
+              minWidth: 160,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+            }}
+          >
+            <div className="px-3 py-1.5 text-[9px] uppercase tracking-[0.2em] border-b"
+                 style={{ color: PALETTE.panelDim, borderColor: PALETTE.panelBorder }}>
+              Mood
+            </div>
+            {moods.map((m, i) => (
+              <button key={i}
+                onClick={() => {
+                  window.eurelyas?.setMood(m.glow);
+                  setOpen(false);
+                }}
+                className="w-full px-3 py-2 text-left text-xs transition"
+                style={{ color: PALETTE.panelText, background: 'transparent', border: 'none' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(201,169,97,0.1)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                {m.label}
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

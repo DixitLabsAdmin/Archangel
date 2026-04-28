@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600&family=Cormorant+Garamond:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+}
+
+.drag { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+/* Resize zones for the frameless chat panel.
+   Electron honors -webkit-app-region: no-drag combined with native resize via 
+   thin invisible bands at the window edges. */
+.resize-w {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+  -webkit-app-region: no-drag;
+  z-index: 100;
+}
+.resize-corner-tl,
+.resize-corner-bl {
+  position: absolute;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+  -webkit-app-region: no-drag;
+  z-index: 101;
+}
+.resize-corner-tl { top: 0; cursor: nwse-resize; }
+.resize-corner-bl { bottom: 0; cursor: nesw-resize; }
+
+/* Custom scrollbar for chat */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(201,169,97,0.2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(201,169,97,0.4); }
