@@ -27,7 +27,7 @@ const ACTION_DURATIONS = {
 
 // State-driven pose. Used when no explicit action pose is active.
 function poseForState(state) {
-  if (state === STATES.THINKING) return 'blast';
+  if (state === STATES.THINKING || state === STATES.WORKING) return 'blast';
   if (state === STATES.SPEAKING) return 'guide';
   return 'idle';
 }
@@ -53,6 +53,7 @@ export default function SpriteCharacterWindow() {
       if (event === 'dismissed') { setState(STATES.IDLE); setActionPose(null); }
       if (event === 'thinking')  setState(STATES.THINKING);
       if (event === 'speaking')  setState(STATES.SPEAKING);
+      if (event === 'working')   setState(STATES.WORKING);
       if (event === 'sleep')     setState(STATES.SLEEPING);
       if (event === 'wake')      setState(STATES.IDLE);
 

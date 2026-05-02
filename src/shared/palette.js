@@ -43,6 +43,7 @@ export const STATES = {
   SUMMONED:  'summoned',     // full presence, wings unfurled, staff forward
   THINKING:  'thinking',     // staff gathers light at crown
   SPEAKING:  'speaking',     // slight forward lean, light at chest
+  WORKING:   'working',      // staff lowered, executing tools autonomously
   DISMISSED: 'dismissed',    // returning to idle
   SLEEPING:  'sleeping'      // very dim, barely visible
 };

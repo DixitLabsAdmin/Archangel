@@ -65,7 +65,7 @@ function CharacterInner({ state, glowMode = 'default' }) {
   const glowIntensity = glow.intensity * stateGlowMul;
 
   // Glow filter — single drop-shadow, GPU-cheap
-  const glowFilter = `drop-shadow(0 0 ${30 * glowIntensity}px rgba(${glow.color},${0.55 * glowIntensity}))`;
+  const glowFilter = `drop-shadow(0 0 ${18 * glowIntensity}px rgba(${glow.color},${0.55 * glowIntensity}))`;
 
   // Pulse during thinking/speaking — CSS animation, no JS overhead
   const pulse = state === STATES.THINKING || state === STATES.SPEAKING;
@@ -90,7 +90,7 @@ function CharacterInner({ state, glowMode = 'default' }) {
           alt="Eurelyas"
           draggable={false}
           style={{
-            width: '480px',
+            width: '300px',
             height: 'auto',
             maxHeight: '95vh',
             maxWidth: '95vw',
@@ -108,8 +108,8 @@ function CharacterInner({ state, glowMode = 'default' }) {
 
       <style>{`
         @keyframes eurelyas-pulse {
-          0%, 100% { filter: drop-shadow(0 0 ${30 * glowIntensity}px rgba(${glow.color},${0.5 * glowIntensity})); }
-          50%      { filter: drop-shadow(0 0 ${60 * glowIntensity}px rgba(${glow.color},${0.85 * glowIntensity})) drop-shadow(0 0 ${100 * glowIntensity}px rgba(${glow.color},${0.5 * glowIntensity})); }
+          0%, 100% { filter: drop-shadow(0 0 ${18 * glowIntensity}px rgba(${glow.color},${0.5 * glowIntensity})); }
+          50%      { filter: drop-shadow(0 0 ${36 * glowIntensity}px rgba(${glow.color},${0.85 * glowIntensity})) drop-shadow(0 0 ${60 * glowIntensity}px rgba(${glow.color},${0.5 * glowIntensity})); }
         }
       `}</style>
     </div>

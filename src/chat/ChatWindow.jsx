@@ -1,7 +1,7 @@
 // src/chat/ChatWindow.jsx
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, StickyNote, Terminal, Sparkles, Search as SearchIcon, Wind, ChevronDown, X, Minus } from 'lucide-react';
+import { Send, StickyNote, Terminal, Sparkles, Search as SearchIcon, Wind, ChevronDown, X, Minus, ChevronRight, Loader2 } from 'lucide-react';
 import { PALETTE } from '../shared/palette.js';
 import Ledger from './Ledger.jsx';
 import Search from './Search.jsx';
@@ -16,6 +16,8 @@ export default function ChatWindow() {
   const [shellLog, setShellLog] = useState([]);
   const [shellInput, setShellInput] = useState('');
   const [thinking, setThinking] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [liveToolCalls, setLiveToolCalls] = useState([]);
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -28,26 +30,58 @@ export default function ChatWindow() {
   }, [notes]);
 
   useEffect(() => {
+    if (!window.eurelyas) return;
+    const unsub = window.eurelyas.onState(({ event, tool }) => {
+      if (event === 'working') setWorking(true);
+      if (event === 'tool_call' && tool) {
+        setLiveToolCalls(prev => [...prev, { ...tool }]);
+      }
+      if (event === 'tool_result' && tool) {
+        setLiveToolCalls(prev => prev.map(tc => tc.id === tool.id ? { ...tool } : tc));
+      }
+      // Clear working when speaking or summoned (conversation done)
+      if (event === 'speaking' || event === 'summoned') setWorking(false);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages, thinking]);
+  }, [messages, thinking, working, liveToolCalls]);
 
   const handleSend = async () => {
     if (!input.trim() || thinking) return;
-    const newMsgs = [...messages.filter(m => m.role !== 'system' && m.role !== 'error'), { role: 'user', content: input }];
+    const newMsgs = [...messages.filter(m => m.role !== 'system' && m.role !== 'error').map(m => ({ role: m.role, content: m.content })), { role: 'user', content: input }];
     setMessages(m => [...m, { role: 'user', content: input }]);
     setInput('');
     setThinking(true);
+    setWorking(false);
+    setLiveToolCalls([]);
     window.eurelyas.broadcastState?.({ event: 'thinking' });
-    const result = await window.eurelyas.chat({ messages: newMsgs });
-    setThinking(false);
-    if (result.ok) {
-      window.eurelyas.broadcastState?.({ event: 'speaking' });
-      setMessages(m => [...m, { role: 'assistant', content: result.text }]);
-      // Return to summoned after a beat
-      setTimeout(() => window.eurelyas.broadcastState?.({ event: 'summoned' }), 1200);
-    } else {
+    try {
+      const result = await window.eurelyas.chat({ messages: newMsgs });
+      setThinking(false);
+      setWorking(false);
+      if (result.ok) {
+        window.eurelyas.broadcastState?.({ event: 'speaking' });
+        setMessages(m => [...m, {
+          role: 'assistant',
+          content: result.text,
+          toolCalls: result.toolCalls && result.toolCalls.length > 0 ? result.toolCalls : undefined
+        }]);
+        setLiveToolCalls([]);
+        setTimeout(() => window.eurelyas.broadcastState?.({ event: 'summoned' }), 1200);
+      } else {
+        window.eurelyas.broadcastState?.({ event: 'summoned' });
+        setMessages(m => [...m, { role: 'error', content: `Error: ${result.error}` }]);
+        setLiveToolCalls([]);
+      }
+    } catch (err) {
+      setThinking(false);
+      setWorking(false);
+      setLiveToolCalls([]);
       window.eurelyas.broadcastState?.({ event: 'summoned' });
-      setMessages(m => [...m, { role: 'error', content: `Error: ${result.error}` }]);
+      setMessages(m => [...m, { role: 'error', content: `Error: ${err.message || err}` }]);
     }
   };
 
@@ -142,23 +176,30 @@ export default function ChatWindow() {
               <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
                 {messages.map((m, i) => (
                   <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      className="max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap"
-                      style={
-                        m.role === 'user'
-                          ? { background: 'rgba(201,169,97,0.12)', border: `1px solid ${PALETTE.goldMid}40`, color: PALETTE.goldLight }
-                          : m.role === 'system'
-                          ? { background: 'rgba(184,201,222,0.06)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelDim, fontStyle: 'italic' }
-                          : m.role === 'error'
-                          ? { background: 'rgba(180,60,60,0.15)', border: '1px solid rgba(220,80,80,0.3)', color: '#f4b4b4' }
-                          : { background: 'rgba(184,201,222,0.08)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelText }
-                      }
-                    >
-                      {m.content}
+                    <div className="max-w-[85%]">
+                      {m.toolCalls && m.toolCalls.length > 0 && (
+                        <div className="mb-1.5 space-y-1">
+                          {m.toolCalls.map(tc => <ToolCallBlock key={tc.id} tool={tc} />)}
+                        </div>
+                      )}
+                      <div
+                        className="px-3 py-2 rounded-lg text-sm leading-relaxed whitespace-pre-wrap"
+                        style={
+                          m.role === 'user'
+                            ? { background: 'rgba(201,169,97,0.12)', border: `1px solid ${PALETTE.goldMid}40`, color: PALETTE.goldLight }
+                            : m.role === 'system'
+                            ? { background: 'rgba(184,201,222,0.06)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelDim, fontStyle: 'italic' }
+                            : m.role === 'error'
+                            ? { background: 'rgba(180,60,60,0.15)', border: '1px solid rgba(220,80,80,0.3)', color: '#f4b4b4' }
+                            : { background: 'rgba(184,201,222,0.08)', border: `1px solid ${PALETTE.panelBorder}`, color: PALETTE.panelText }
+                        }
+                      >
+                        {m.content}
+                      </div>
                     </div>
                   </div>
                 ))}
-                {thinking && (
+                {thinking && !working && (
                   <div className="flex gap-1.5 px-3 py-2">
                     {[0, 1, 2].map(i => (
                       <motion.div
@@ -169,6 +210,27 @@ export default function ChatWindow() {
                         transition={{ repeat: Infinity, duration: 1, delay: i * 0.15 }}
                       />
                     ))}
+                  </div>
+                )}
+                {working && (
+                  <div className="px-3 py-2 space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs" style={{ color: PALETTE.energyWarm }}>
+                      <motion.div
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: PALETTE.energyWarm, boxShadow: `0 0 8px ${PALETTE.energyWarm}` }}
+                        animate={{ opacity: [0.4, 1, 0.4] }}
+                        transition={{ repeat: Infinity, duration: 1.5 }}
+                      />
+                      <span className="tracking-[0.15em] uppercase" style={{ fontFamily: 'Cinzel, Georgia, serif' }}>
+                        Working
+                      </span>
+                      {liveToolCalls.length > 0 && (
+                        <span style={{ color: PALETTE.panelDim }}>
+                          {liveToolCalls[liveToolCalls.length - 1].name.replace(/_/g, ' ')}
+                        </span>
+                      )}
+                    </div>
+                    {liveToolCalls.map(tc => <ToolCallBlock key={tc.id} tool={tc} />)}
                   </div>
                 )}
               </div>
@@ -240,12 +302,71 @@ export default function ChatWindow() {
       {/* Footer */}
       <div className="px-4 py-2 border-t flex items-center justify-between text-[9px] uppercase tracking-[0.2em]"
            style={{ borderColor: PALETTE.panelBorder, color: PALETTE.panelDim }}>
-        <span>Claude Opus 4.7</span>
+        <span>Claude Sonnet 4</span>
         <span className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#86efac', boxShadow: '0 0 6px #86efac' }} />
           bound
         </span>
       </div>
+    </div>
+  );
+}
+
+// Collapsible inline block showing a tool call: name, input summary, status, output
+function ToolCallBlock({ tool }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusColor =
+    tool.status === 'running' ? PALETTE.energyWarm
+    : tool.status === 'error' ? '#f4b4b4'
+    : PALETTE.panelDim;
+
+  const inputSummary = tool.input
+    ? Object.values(tool.input).join(' ').slice(0, 60) + (Object.values(tool.input).join(' ').length > 60 ? '...' : '')
+    : '';
+
+  const resultPreview = tool.result
+    ? tool.result.slice(0, 500) + (tool.result.length > 500 ? '\n...' : '')
+    : '';
+
+  return (
+    <div
+      className="rounded text-[11px] font-mono overflow-hidden"
+      style={{ background: 'rgba(184,201,222,0.05)', border: `1px solid ${PALETTE.panelBorder}` }}
+    >
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left"
+        style={{ color: PALETTE.panelText, background: 'transparent', border: 'none' }}
+      >
+        <ChevronRight
+          size={10}
+          style={{
+            transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            transition: 'transform 0.15s',
+            flexShrink: 0,
+            color: PALETTE.panelDim
+          }}
+        />
+        {tool.status === 'running' && (
+          <Loader2 size={10} style={{ color: PALETTE.energyWarm, animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+        )}
+        <span style={{ color: statusColor }}>
+          {tool.name.replace(/_/g, ' ')}
+        </span>
+        <span style={{ color: PALETTE.panelDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+          {inputSummary}
+        </span>
+      </button>
+      {expanded && resultPreview && (
+        <div
+          className="px-2 pb-1.5 whitespace-pre-wrap break-all"
+          style={{ color: tool.status === 'error' ? '#f4b4b4' : PALETTE.panelDim, borderTop: `1px solid ${PALETTE.panelBorder}` }}
+        >
+          {resultPreview}
+        </div>
+      )}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

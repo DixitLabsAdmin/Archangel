@@ -58,7 +58,7 @@ export default function SpriteCharacter({ state, pose = 'idle', glowMode = 'defa
 
   // State-driven scale
   const scale =
-    state === STATES.SUMMONED || state === STATES.THINKING || state === STATES.SPEAKING ? 1.0
+    state === STATES.SUMMONED || state === STATES.THINKING || state === STATES.SPEAKING || state === STATES.WORKING ? 1.0
     : state === STATES.AWARE    ? 0.78
     : state === STATES.SLEEPING ? 0.55
     : 0.65;
@@ -70,25 +70,27 @@ export default function SpriteCharacter({ state, pose = 'idle', glowMode = 'defa
 
   // Glow palette by mode (manual or action-driven)
   const glowMap = {
-    default:   `0 0 60px ${PALETTE.goldGlow}, 0 0 120px ${PALETTE.energyWarm}`,
-    warm:      `0 0 70px #FFB778, 0 0 130px #FF8855`,
-    cool:      `0 0 70px ${PALETTE.awareCyan}, 0 0 130px #5B9BD5`,
-    intense:   `0 0 90px #FFFFFF, 0 0 180px ${PALETTE.goldGlow}`,
-    dim:       `0 0 30px rgba(255,233,168,0.3)`,
-    crimson:   `0 0 70px #E89B7A, 0 0 130px #C46060`,
-    serene:    `0 0 60px #C8D8FF, 0 0 120px #A8C0EC`
+    default:   `0 0 30px ${PALETTE.goldGlow}, 0 0 60px ${PALETTE.energyWarm}`,
+    warm:      `0 0 34px #FFB778, 0 0 65px #FF8855`,
+    cool:      `0 0 34px ${PALETTE.awareCyan}, 0 0 65px #5B9BD5`,
+    intense:   `0 0 44px #FFFFFF, 0 0 70px ${PALETTE.goldGlow}`,
+    dim:       `0 0 16px rgba(255,233,168,0.3)`,
+    crimson:   `0 0 34px #E89B7A, 0 0 65px #C46060`,
+    serene:    `0 0 30px #C8D8FF, 0 0 60px #A8C0EC`
   };
 
   // State-driven default glow (overridden by glowMode if not 'default')
   const stateGlow =
-    state === STATES.THINKING ? `0 0 60px ${PALETTE.goldGlow}, 0 0 120px ${PALETTE.energyWarm}`
-    : state === STATES.SPEAKING ? `0 0 80px ${PALETTE.goldGlow}, 0 0 140px ${PALETTE.energyBloom}`
-    : state === STATES.SUMMONED ? `0 0 50px ${PALETTE.goldGlow}`
-    : state === STATES.AWARE    ? `0 0 30px ${PALETTE.awareCyan}`
-    : `0 0 20px rgba(255,233,168,0.3)`;
+    state === STATES.WORKING  ? `0 0 25px ${PALETTE.energyWarm}, 0 0 50px ${PALETTE.goldMid}`
+    : state === STATES.THINKING ? `0 0 30px ${PALETTE.goldGlow}, 0 0 60px ${PALETTE.energyWarm}`
+    : state === STATES.SPEAKING ? `0 0 36px ${PALETTE.goldGlow}, 0 0 70px ${PALETTE.energyBloom}`
+    : state === STATES.SUMMONED ? `0 0 25px ${PALETTE.goldGlow}`
+    : state === STATES.AWARE    ? `0 0 16px ${PALETTE.awareCyan}`
+    : `0 0 10px rgba(255,233,168,0.3)`;
 
   const glow = glowMode !== 'default' ? glowMap[glowMode] || glowMap.default : stateGlow;
   const pulse = state === STATES.THINKING || state === STATES.SPEAKING;
+  const working = state === STATES.WORKING;
   const poseUrl = resolvePose(pose);
 
   return (
@@ -110,35 +112,35 @@ export default function SpriteCharacter({ state, pose = 'idle', glowMode = 'defa
           transition: 'transform 0.6s cubic-bezier(0.33, 1, 0.68, 1)',
           opacity,
           filter: `drop-shadow(${glow})`,
-          animation: pulse ? 'eurelyas-pulse 2s ease-in-out infinite' : 'eurelyas-float 4s ease-in-out infinite'
+          animation: working ? 'eurelyas-work 3s ease-in-out infinite' : pulse ? 'eurelyas-pulse 2s ease-in-out infinite' : 'eurelyas-float 4s ease-in-out infinite'
         }}
       >
         {/* Base pose layer with crossfade. We render every pose, but only the
             active one has opacity 1. CSS transitions handle the crossfade. */}
-        {Object.entries(POSES).map(([name, url]) => (
-          <img
-            key={name}
-            src={url}
-            alt={`Eurelyas (${name})`}
-            style={{
-              width: '480px',
-              height: 'auto',
-              maxHeight: '95vh',
-              maxWidth: '95vw',
-              userSelect: 'none',
-              pointerEvents: 'none',
-              display: 'block',
-              position: name === 'idle' ? 'static' : 'absolute',
-              top: 0,
-              left: 0,
-              opacity: name === pose ? 1 : 0,
-              transition: 'opacity 0.7s ease-in-out'
-            }}
-            draggable={false}
-          />
-        ))}
-      </div>
-
+       <div style={{ position: 'relative', width: '210px', maxWidth: '80vw', aspectRatio: '1198 / 617' }}>
+          {Object.entries(POSES).map(([name, url]) => (
+            <img
+              key={name}
+              src={url}
+              alt={`Eurelyas (${name})`}
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                userSelect: 'none',
+                pointerEvents: 'none',
+                opacity: name === pose ? 1 : 0,
+                transition: 'opacity 0.7s ease-in-out'
+              }}
+              draggable={false}
+            />
+          ))}
+        </div>
+	</div>
       <ParticleLayer state={state} glowMode={glowMode} />
 
       <style>{`
@@ -147,8 +149,12 @@ export default function SpriteCharacter({ state, pose = 'idle', glowMode = 'defa
           50% { transform: translateY(-8px); }
         }
         @keyframes eurelyas-pulse {
-          0%, 100% { filter: drop-shadow(0 0 40px ${PALETTE.goldGlow}); }
-          50%      { filter: drop-shadow(0 0 80px ${PALETTE.goldGlow}) drop-shadow(0 0 120px ${PALETTE.energyBloom}); }
+          0%, 100% { filter: drop-shadow(0 0 22px ${PALETTE.goldGlow}); }
+          50%      { filter: drop-shadow(0 0 40px ${PALETTE.goldGlow}) drop-shadow(0 0 60px ${PALETTE.energyBloom}); }
+        }
+        @keyframes eurelyas-work {
+          0%, 100% { filter: drop-shadow(0 0 18px ${PALETTE.energyWarm}); }
+          50%      { filter: drop-shadow(0 0 30px ${PALETTE.energyWarm}) drop-shadow(0 0 50px ${PALETTE.goldMid}); }
         }
       `}</style>
     </div>
@@ -185,6 +191,7 @@ function ParticleLayer({ state, glowMode }) {
     const intensity =
       state === STATES.SLEEPING ? 0
       : state === STATES.THINKING || state === STATES.SPEAKING ? 1.5
+      : state === STATES.WORKING ? 1.2
       : state === STATES.SUMMONED ? 1
       : 0.4;
 

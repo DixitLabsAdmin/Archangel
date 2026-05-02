@@ -1,7 +1,7 @@
 // src/main.jsx
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import CharacterWindow from './character/CharacterWindow.jsx';
+import CharacterWindow from './character/SpriteCharacterWindow.jsx';
 import ChatWindow from './chat/ChatWindow.jsx';
 import './index.css';
 

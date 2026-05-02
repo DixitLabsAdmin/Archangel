@@ -1,28 +1,25 @@
 {
-  "_comment": "Eurelyas MCP server config. Set enabled=true and provide an authorization_token (or $ENV_VAR reference) to wire in a connector. Tokens beginning with $ are resolved from .env at startup. Each server uses Anthropic's mcp_servers schema. Restart Eurelyas after editing.",
-  "_docs": "https://docs.claude.com/en/docs/agents-and-tools/mcp-connector",
+  "_comment": "Eurelyas MCP server config (mcp-client-2025-11-20 format). Set enabled=true and provide an authorization_token (or $ENV_VAR reference) to wire in a connector. Tokens beginning with $ are resolved from .env at startup. Optional allowed_tools array restricts which tools are exposed. Restart Eurelyas after editing.",
+  "_docs": "https://platform.claude.com/docs/en/agents-and-tools/mcp-connector",
+  "_auth": "Get OAuth tokens via: npx @modelcontextprotocol/inspector — connect to the server URL, run Quick OAuth Flow, copy the access_token.",
   "servers": [
     {
       "enabled": false,
+      "name": "google-calendar",
+      "url": "https://calendarmcp.googleapis.com/mcp/v1",
+      "authorization_token": "$GOOGLE_CALENDAR_TOKEN"
+    },
+    {
+      "enabled": false,
       "name": "gmail",
-      "url": "https://mcp.example.com/gmail/sse",
-      "authorization_token": "$GMAIL_MCP_TOKEN",
-      "tool_configuration": {
-        "enabled": true,
-        "allowed_tools": ["search_messages", "read_message", "send_message"]
-      }
+      "url": "https://gmailmcp.googleapis.com/mcp/v1",
+      "authorization_token": "$GOOGLE_GMAIL_TOKEN"
     },
     {
       "enabled": false,
       "name": "google-drive",
-      "url": "https://mcp.example.com/drive/sse",
-      "authorization_token": "$DRIVE_MCP_TOKEN"
-    },
-    {
-      "enabled": false,
-      "name": "google-calendar",
-      "url": "https://mcp.example.com/calendar/sse",
-      "authorization_token": "$CALENDAR_MCP_TOKEN"
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "authorization_token": "$GOOGLE_DRIVE_TOKEN"
     },
     {
       "enabled": false,
